@@ -4,7 +4,9 @@ import json
 from tqdm import tqdm
 from pathlib import Path
 import pandas as pd
-
+import pprint
+import requests
+from collections import Counter
 
 def populate_db(conn, cur, music_path):
     # Check if table already exists; drop if it does
@@ -12,7 +14,7 @@ def populate_db(conn, cur, music_path):
     # Open schema file to create table
     with open('schema.sql', 'r') as sql_file:
         sql_script = sql_file.read()
-    # Execute script
+    # Execute script and
     cur.executescript(sql_script)
     conn.commit()
     # List all data files in path
@@ -20,9 +22,10 @@ def populate_db(conn, cur, music_path):
         with open(os.path.join(music_path, name), encoding='utf-8') as f:
             streaming_data = json.load(f)
             # Open and loop through the json
-            # tqdm displays progress bar in terminal
+            # tqdm display progress bar in terminal
             for item in tqdm(streaming_data):
-                # If track name is null, entry is a podcast: only gathering music data
+                # If track name is null, entry is a podcast
+                # Only gathering music data
                 if item['master_metadata_track_name'] is not None:
                     # Reformatting timestamp into a readable format
                     date_str = item["ts"].replace("T", ' ').replace("Z", '')
@@ -39,7 +42,7 @@ def populate_db(conn, cur, music_path):
 
 def unique_entries(df, columns):
     """
-    Create DataFrame with single instance of song stats
+    Create data frame with single instance of song stats
     Used to pull data about song entry
     """
     columns = ['date', 'reason_end', 'id']
@@ -56,50 +59,84 @@ def total_time(df):
     return int(total_mins)
 
 
-def top_five(df, column):
+def top_listen_month(df):
+    top_month = 0
+    total = 0
+
+    for month in range(12):
+        month_total = df[df["date"].dt.month == month]
+        month_sum = total_time(month_total)
+        if month_sum >= total:
+            total = month_sum
+            top_month = month
+    
+    return top_month
+
+def top_ten(df, column):
     """
-    Finds the top five frequent values within a column
+    Finds the top five frequent value withing a column
     """
     times_played = df[column].value_counts().reset_index(name='Frequency')
-    top = times_played[column].iloc[0:5].to_list()
+    top = times_played[column].iloc[0:10].to_list()
 
     return top
 
+def get_info(songs: list):
+    #  {"song": "", "track_preview": "", "song_art": ""}
+    info_dict = {}
+    genre = []
+    
+    for song in songs:
+        response = requests.get("itunes.apple.com/search?term" + song + "&entity=song&limit=1")
+        rtn = response.json()
+        data = rtn["results"][0]
+
+        info_dict.update({"artist": data.artistName})
+        info_dict.update({"art_work": data.artworkUrl100})
+        info_dict.update({"album": data.collectionName})
+        info_dict.update({"preview": data.previewUrl})
+
+        genre.append(data.primaryGenreName)
+
+    count_genre = Counter(genre)
+    top_genre = count_genre.most_common(1)
+
+    return top_genre
+
 
 def main():
-    music_path = Path("path/to/spotify_data")
+    music_path = Path("C:\\Users\\aesal\\OneDrive\\Documents\\scripts\\sql_test\\spotify_stats/2023")
 
     conn = sqlite3.connect('db.db')
     cur = conn.cursor()
 
     populate_db(conn, cur, music_path)
 
+    wrapped_data = {"top_artists": [], "top_albums": [], "top_songs": [], "total_time": 0, "genre": ""}
+
     query = "SELECT * FROM music_data;"
-    # Convert SQL database into a pandas DataFrame
+
     df = pd.read_sql_query(query, conn)
-    # Turn date in text format into a "Date" format
     df["date"] = pd.to_datetime(df['date'])
 
-    years = [2021, 2022, 2023, 2024, 2025]
-    # Go through spotify data by year
-    for year in years:
-        # Filter data by year
-        year_data = df[df["date"].dt.year == year]
-        # Filtering songs based on the reason that tracked because it finished
-        filtered_songs = year_data[year_data['reason_end'] == 'trackdone']
+    year = 2023
 
-        top_songs = top_five(filtered_songs, 'song')
-        top_artists = top_five(filtered_songs, 'artist')
-        top_albums = top_five(filtered_songs, 'album')
-        time_in_mins = total_time(year_data)
-        # Print top five songs, artists, albums, and
-        # total listening time - regardless of track finished to completion
-        print(f"Spotify data for {year}")
-        print(top_songs)
-        print(top_artists)
-        print(top_albums)
-        print(f"Total listening time: {time_in_mins} minutes")
-        print("\n")
+    year_data = df[df["date"].dt.year == year]
+    filtered_songs = year_data[year_data['reason_end'] == 'trackdone']
+
+    top_songs = top_ten(filtered_songs, 'song')
+    top_artists = top_ten(filtered_songs, 'artist')
+    top_albums = top_ten(filtered_songs, 'album')
+    time_in_mins = total_time(year_data)
+
+    wrapped_data["top_artists"] = top_artists
+    wrapped_data["top_albums"] = top_albums
+    wrapped_data["top_songs"] = top_songs
+    wrapped_data["total_time"] = time_in_mins
+
+    print(f"Spotify data for {year}")
+    pprint.pprint(wrapped_data)
+    print("\n")
 
     conn.close()
 
